@@ -2,26 +2,62 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Rendering;
 using Microsoft.EntityFrameworkCore;
 using Watchlist.Data;
+using Watchlist.Models;
 
 namespace Watchlist.Controllers
 {
+    [Authorize]
     public class MoviesController : Controller
     {
         private readonly ApplicationDbContext _context;
+        private readonly UserManager<ApplicationUser> _userManager;
 
-        public MoviesController(ApplicationDbContext context)
+        public MoviesController(ApplicationDbContext context,
+            UserManager<ApplicationUser> userManager)
         {
             _context = context;
+            _userManager = userManager;
         }
+
+        [HttpGet]
+        public async Task<string> GetCurrentUserId()
+        {
+            ApplicationUser usr = await GetCurrentUserAsync();
+            return usr?.Id;
+        }
+
+        private Task<ApplicationUser> GetCurrentUserAsync() =>
+        _userManager.GetUserAsync(HttpContext.User);
 
         // GET: Movies
         public async Task<IActionResult> Index()
         {
-            return View(await _context.Movies.ToListAsync());
+            var userId = await GetCurrentUserId();
+            var model = await _context.Movies.Select(x =>
+                new MovieViewModel
+                {
+                    MovieId = x.Id,
+                    Title = x.Title,
+                    Year = x.Year
+                }).ToListAsync();
+            foreach (var item in model)
+            {
+                var m = await _context.UserMovies.FirstOrDefaultAsync(x =>
+                    x.UserId == userId && x.MovieId == item.MovieId);
+                if (m != null)
+                {
+                    item.InWatchlist = true;
+                    item.Rating = m.Rating;
+                    item.Watched = m.Watched;
+                }
+            }
+            return View(model);
         }
 
         // GET: Movies/Details/5
@@ -147,6 +183,46 @@ namespace Watchlist.Controllers
         private bool MovieExists(int id)
         {
             return _context.Movies.Any(e => e.Id == id);
+        }
+
+        [HttpGet]
+        public async Task<JsonResult> AddRemove(int id, int val)
+        {
+            int retval = -1;
+            var userId = await GetCurrentUserId();
+            if (val == 1)
+            {
+                // if a record exists in UserMovies that contains both the user’s
+                // and movie’s Ids, then the movie is in the watchlist and can
+                // be removed
+                var movie = _context.UserMovies.FirstOrDefault(x =>
+                    x.MovieId == id && x.UserId == userId);
+                if (movie != null)
+                {
+                    _context.UserMovies.Remove(movie);
+                    retval = 0;
+                }
+            }
+            else
+            {
+                // the movie is not currently in the watchlist, so we need to
+                // build a new UserMovie object and add it to the database
+                _context.UserMovies.Add(
+                    new UserMovie
+                    {
+                        UserId = userId,
+                        MovieId = id,
+                        Watched = false,
+                        Rating = 0
+                    }
+                );
+                retval = 1;
+            }
+            // now we can save the changes to the database
+            await _context.SaveChangesAsync();
+            // and our return value (-1, 0, or 1) back to the script that called
+            // this method from the Index page
+            return Json(retval);
         }
     }
 }
